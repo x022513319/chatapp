@@ -1,17 +1,97 @@
 package main
 
 import (
+	"backend/internal/auth"
+	"context"
+	"database/sql"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
 
+func mustOpenDB() *sql.DB {
+	dsn := os.Getenv("POSTGRES_URL") // data source name
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := db.Ping(); err != nil {
+		log.Fatal(err)
+	}
+	return db
+}
+
+func mustOpenRedis() *redis.Client {
+	addr := os.Getenv("REDIS_ADDR")
+	dbIdx := 0
+	if v := os.Getenv("REDIS_DB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			dbIdx = n
+		}
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr, DB: dbIdx})
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		log.Fatal("redis connect error:", err)
+	}
+	return rdb
+}
+
+func authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.GetHeader("Authorization")
+		if !strings.HasPrefix(h, "Bearer") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+			return
+		}
+		token := strings.TrimPrefix(h, "Bearer ")
+		claims, err := auth.ParseAndValidate(token)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+
+		// get userID (sub)
+		uid, err := strconv.ParseInt(claims.Subject, 10, 64)
+		if err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "bad sub"})
+			return
+		}
+		c.Set("userID", uid)
+		c.Next()
+	}
+}
+
+func init() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("no .env file found, fallback to system env")
+	}
+}
+
 func main() {
+	// check environment variables
+	if os.Getenv("JWT_SECRET") == "" {
+		log.Fatal("JWT_SECRET not set")
+	}
+
+	db := mustOpenDB()
+	defer db.Close()
+
+	rdb := mustOpenRedis()
+	defer rdb.Close()
+
+	h := &auth.Handler{DB: db, RDB: rdb}
+
 	r := gin.Default()
 
+	// CORS
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -24,6 +104,12 @@ func main() {
 	r.GET("/health", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
+
+	// Auth APIs
+	api := r.Group("/api")
+	api.POST("/register", h.Register)
+	api.POST("/login", h.Login)
+	api.GET("/me", authMiddleware(), h.Me)
 
 	log.Println("backend running on :8080")
 	if err := r.Run(":8080"); err != nil {
