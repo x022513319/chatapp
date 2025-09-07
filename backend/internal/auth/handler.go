@@ -89,7 +89,7 @@ func (h *Handler) Login(c *gin.Context) {
 	ctx := context.Background()
 
 	keyAttempts := "login:attempts:" + strings.ToLower(req.Email)
-	keyBlock := "login:block" + strings.ToLower(req.Email)
+	keyBlock := "login:block:" + strings.ToLower(req.Email)
 
 	if ttl, err := h.RDB.TTL(ctx, keyBlock).Result(); err == nil && ttl > 0 {
 		c.JSON(429, gin.H{"error": "too many attempts, try later", "retry_after_seconds": int(ttl.Seconds())})
