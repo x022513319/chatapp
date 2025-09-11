@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,9 +21,21 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true }, // MVP
 }
 
-type wsConn struct{ *websocket.Conn }
+type wsConn struct {
+	*websocket.Conn
+	userID int64
+	roomID int64
+	mu     sync.Mutex
+}
 
-func (c wsConn) WriteJSON(v any) error { return c.Conn.WriteJSON(v) }
+func (c *wsConn) WriteJSON(v any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.WriteJSON(v)
+}
+func (c *wsConn) Close() error  { return c.Conn.Close() }
+func (c *wsConn) UserID() int64 { return c.userID }
+func (c *wsConn) RoomID() int64 { return c.roomID }
 
 func (h *Handler) Handle(c *gin.Context) {
 	uidAny, ok := c.Get("userID")
@@ -43,10 +56,10 @@ func (h *Handler) Handle(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	ws := wsConn{Conn: conn}
-	h.Hub.Join(roomID, ws)
+	ws := &wsConn{Conn: conn, userID: userID, roomID: roomID}
+	h.Hub.Join(ws)
 	defer func() {
-		h.Hub.Leave(roomID, ws)
+		h.Hub.Leave(ws)
 		_ = conn.Close()
 	}()
 

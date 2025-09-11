@@ -2,6 +2,7 @@ package main
 
 import (
 	apihttp "backend/internal/api"
+	"backend/internal/auth"
 	authpkg "backend/internal/auth"
 	"backend/internal/store"
 	"backend/internal/ws"
@@ -72,6 +73,38 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
+func wsAuthMiddleWare() gin.HandlerFunc {
+
+	return func(c *gin.Context) {
+		var token string
+
+		if h := c.GetHeader("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			token = strings.TrimPrefix(h, "Bearer ")
+		} else if q := c.Query("token"); q != "" {
+			token = q
+		} else if ck, err := c.Cookie("access_token"); err == nil {
+			token = ck
+		}
+
+		if token == "" {
+			c.AbortWithStatusJSON(401, gin.H{"error": "mission token", "code": "UNAUTHORIZED"})
+			return
+		}
+		claim, err := auth.ParseAndValidate(token)
+		if err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "invalid token", "code": "UNAUTHORIZED"})
+			return
+		}
+		uid, err := strconv.ParseInt(claim.Subject, 10, 64)
+		if err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "bad sub", "code": "UNAUTHORIZED"})
+			return
+		}
+		c.Set("userID", uid)
+		c.Next()
+	}
+}
+
 func init() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("no .env file found, fallback to system env")
@@ -122,7 +155,7 @@ func main() {
 
 	// WebSocket
 	wsh := &ws.Handler{Store: st, Hub: ws.NewHub()}
-	r.GET("/ws", authMiddleware(), wsh.Handle)
+	r.GET("/ws", wsAuthMiddleWare(), wsh.Handle)
 
 	log.Println("backend running on :8080")
 	if err := r.Run(":8080"); err != nil {
