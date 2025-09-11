@@ -1,7 +1,10 @@
 package main
 
 import (
-	"backend/internal/auth"
+	apihttp "backend/internal/api"
+	authpkg "backend/internal/auth"
+	"backend/internal/store"
+	"backend/internal/ws"
 	"context"
 	"database/sql"
 	"log"
@@ -52,7 +55,7 @@ func authMiddleware() gin.HandlerFunc {
 			return
 		}
 		token := strings.TrimPrefix(h, "Bearer ")
-		claims, err := auth.ParseAndValidate(token)
+		claims, err := authpkg.ParseAndValidate(token)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
@@ -87,7 +90,7 @@ func main() {
 	rdb := mustOpenRedis()
 	defer rdb.Close()
 
-	h := &auth.Handler{DB: db, RDB: rdb}
+	authH := &authpkg.Handler{DB: db, RDB: rdb}
 
 	r := gin.Default()
 
@@ -106,10 +109,20 @@ func main() {
 	})
 
 	// Auth APIs
-	api := r.Group("/api")
-	api.POST("/register", h.Register)
-	api.POST("/login", h.Login)
-	api.GET("/me", authMiddleware(), h.Me)
+	apiGroup := r.Group("/api")
+	apiGroup.POST("/register", authH.Register)
+	apiGroup.POST("/login", authH.Login)
+	apiGroup.GET("/me", authMiddleware(), authH.Me)
+
+	st := store.NewFormDB(db)
+
+	// Chat REST
+	chatAPI := &apihttp.Handler{Store: st}
+	apihttp.Mount(apiGroup, chatAPI, authMiddleware())
+
+	// WebSocket
+	wsh := &ws.Handler{Store: st, Hub: ws.NewHub()}
+	r.GET("/ws", authMiddleware(), wsh.Handle)
 
 	log.Println("backend running on :8080")
 	if err := r.Run(":8080"); err != nil {
