@@ -9,15 +9,17 @@ import (
 type Client interface {
 	WriteJSON(v any) error
 	Close() error
+	UserID() int64
+	RoomID() int64
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[int64]map[Client]struct{} // roomID -> set
+	mu     sync.RWMutex
+	byRoom map[int64]map[Client]struct{} // roomID -> set
 }
 
 func NewHub() *Hub {
-	return &Hub{clients: make(map[int64]map[Client]struct{})}
+	return &Hub{byRoom: make(map[int64]map[Client]struct{})}
 }
 
 type WSMessage struct {
@@ -26,22 +28,24 @@ type WSMessage struct {
 	TS   time.Time `json:"ts"`
 }
 
-func (h *Hub) Join(roomID int64, c Client) {
+func (h *Hub) Join(c Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.clients[roomID] == nil {
-		h.clients[roomID] = make(map[Client]struct{})
+	rid := c.RoomID()
+	if h.byRoom[rid] == nil {
+		h.byRoom[rid] = make(map[Client]struct{})
 	}
-	h.clients[roomID][c] = struct{}{}
+	h.byRoom[rid][c] = struct{}{}
 }
 
-func (h *Hub) Leave(roomID int64, c Client) {
+func (h *Hub) Leave(c Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if set := h.clients[roomID]; set != nil {
+	rid := c.RoomID()
+	if set := h.byRoom[rid]; set != nil {
 		delete(set, c)
 		if len(set) == 0 {
-			delete(h.clients, roomID)
+			delete(h.byRoom, rid)
 		}
 	}
 }
@@ -58,7 +62,7 @@ func (h *Hub) BroadcastMessage(m models.Message) {
 
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	for cli := range h.clients[m.RoomID] {
+	for cli := range h.byRoom[m.RoomID] {
 		_ = cli.WriteJSON(msg)
 	}
 }
